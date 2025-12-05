@@ -32,3 +32,23 @@ class SystemConstants:
 
     # 回温参数
     RECOVER_RATE = 0.5  # 每分钟回温0.5度
+
+    # 制冷模式 (Cooling) - 对应 Excel 冷
+    COOL_MODE_DEFAULTS = {
+        'default_target': 25.0,
+        'temp_limit_min': 18.0,
+        'temp_limit_max': 28.0,
+        'rooms': {
+            '101': 32.0, '102': 28.0, '103': 30.0, '104': 29.0, '105': 35.0
+        }
+    }
+
+    # 制热模式 (Heating) - 对应 Excel 热
+    HEAT_MODE_DEFAULTS = {
+        'default_target': 23.0,
+        'temp_limit_min': 18.0,
+        'temp_limit_max': 25.0,
+        'rooms': {
+            '101': 10.0, '102': 15.0, '103': 18.0, '104': 12.0, '105': 14.0
+        }
+    }
