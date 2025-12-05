@@ -3,7 +3,7 @@ import os
 
 class Config:
     # 数据库连接 (组员需在各自电脑修改密码)
-    # 格式: mysql+pymysql://用户名:密码@地址:端口/数据库名
+    # 格式 : mysql+pymysql://用户名:密码@地址:端口/数据库名
     SQLALCHEMY_DATABASE_URI = 'mysql+pymysql://root:147258369@localhost/hotel_ac_system'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SECRET_KEY = 'bupt_se_project_secret'
