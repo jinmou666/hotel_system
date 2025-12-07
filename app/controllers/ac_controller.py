@@ -9,12 +9,26 @@ ac_bp = Blueprint('ac_bp', __name__)
 def get_room_state(room_id):
     room = Room.query.get(room_id)
     if not room: return jsonify({'code': 404})
-    return jsonify(room.to_dict())
+
+    data = room.to_dict()
+    # 注入实时调度状态
+    scheduler = Scheduler()
+    sched_status = scheduler.get_scheduling_status(room_id)
+
+    # 组合显示逻辑：
+    # 如果关机 -> OFF
+    # 如果开机且在服务 -> RUNNING
+    # 如果开机但在等待 -> WAITING
+    if room.power_status == 'OFF':
+        data['sched_status'] = 'OFF'
+    else:
+        data['sched_status'] = sched_status
+
+    return jsonify(data)
 
 
 @ac_bp.route('/setMode', methods=['POST'])
 def set_mode():
-    """验收第一步：设置模式"""
     data = request.get_json()
     mode = data.get('mode', 'COOL')
     Scheduler().reset_mode(mode)
@@ -30,7 +44,10 @@ def toggle_power(room_id):
     room = Room.query.get(room_id)
 
     if power_status == 'ON':
-        scheduler.request_power(room_id, room.fan_speed, room.target_temp)
+        # 补全参数，防止前端传空
+        target = data.get('target_temp', room.target_temp)
+        fan = data.get('fan_speed', room.fan_speed)
+        scheduler.request_power(room_id, fan, target)
     else:
         scheduler.stop_power(room_id)
     return jsonify({'code': 200, 'msg': 'success'})
