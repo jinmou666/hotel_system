@@ -1,33 +1,68 @@
 <template>
   <div class="app-container">
-    <h2>酒店空调管理系统</h2>
-    <!-- 空调面板（101-105房间） -->
-    <div style="display: flex; flex-wrap: wrap;">
-      <AcPanel roomId="101" />
-      <AcPanel roomId="102" />
-      <AcPanel roomId="103" />
-      <AcPanel roomId="104" />
-      <AcPanel roomId="105" />
+    <div class="header">
+      <h2>酒店空调管理系统 (验收版)</h2>
+      <div class="steps">
+        <span :class="{ active: currentStep === 0 }">1. 模式设定</span> &gt;
+        <span :class="{ active: currentStep === 1 }">2. 办理入住</span> &gt;
+        <span :class="{ active: currentStep === 2 }">3. 脚本测试</span> &gt;
+        <span :class="{ active: currentStep === 3 }">4. 实时监控</span> &gt;
+        <span :class="{ active: currentStep === 4 }">5. 结账离店</span>
+      </div>
     </div>
 
-    <!-- 前台界面 -->
-    <FrontDesk />
-
-    <!-- 监控大屏 -->
-    <MonitorScreen />
+    <div class="content">
+      <ModeSelection v-if="currentStep === 0" @next="nextStep" />
+      <CheckIn v-if="currentStep === 1" @next="nextStep" />
+      <ScriptControl v-if="currentStep === 2" @next="nextStep" />
+      <MonitorScreen v-if="currentStep === 3" @next="nextStep" />
+      <CheckOut v-if="currentStep === 4" @prev="currentStep = 3" />
+    </div>
   </div>
 </template>
 
 <script setup>
-import AcPanel from './components/AcPanel.vue';
-import FrontDesk from './components/FrontDesk.vue';
+import { ref } from 'vue';
+import ModeSelection from './components/ModeSelection.vue';
+import CheckIn from './components/CheckIn.vue';
+import ScriptControl from './components/ScriptControl.vue';
 import MonitorScreen from './components/MonitorScreen.vue';
+import CheckOut from './components/CheckOut.vue';
+
+const currentStep = ref(0);
+
+const nextStep = () => {
+  if (currentStep.value < 4) {
+    currentStep.value++;
+  }
+};
 </script>
 
-<style>
+<style scoped>
 .app-container {
   max-width: 1200px;
   margin: 0 auto;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+.header {
+  text-align: center;
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #eee;
+}
+.steps span {
+  color: #999;
+  font-weight: bold;
+  margin: 0 10px;
+}
+.steps span.active {
+  color: #409eff;
+  font-size: 1.1em;
+}
+.content {
   padding: 20px;
+  background: #f9f9f9;
+  border-radius: 8px;
+  min-height: 500px;
 }
 </style>
