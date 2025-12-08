@@ -11,19 +11,8 @@ def get_room_state(room_id):
     if not room: return jsonify({'code': 404})
 
     data = room.to_dict()
-    # 注入实时调度状态
     scheduler = Scheduler()
-    sched_status = scheduler.get_scheduling_status(room_id)
-
-    # 组合显示逻辑：
-    # 如果关机 -> OFF
-    # 如果开机且在服务 -> RUNNING
-    # 如果开机但在等待 -> WAITING
-    if room.power_status == 'OFF':
-        data['sched_status'] = 'OFF'
-    else:
-        data['sched_status'] = sched_status
-
+    data['sched_status'] = scheduler.get_scheduling_status(room_id)
     return jsonify(data)
 
 
@@ -32,7 +21,20 @@ def set_mode():
     data = request.get_json()
     mode = data.get('mode', 'COOL')
     Scheduler().reset_mode(mode)
-    return jsonify({'code': 200, 'msg': f'Reset to {mode}'})
+    return jsonify({'code': 200, 'msg': f'Reset to {mode} (Paused)'})
+
+
+# === 新增：启动物理引擎 ===
+@ac_bp.route('/startSimulation', methods=['POST'])
+def start_simulation():
+    Scheduler().resume_simulation()
+    return jsonify({'code': 200, 'msg': 'Simulation Started'})
+
+
+@ac_bp.route('/stopSimulation', methods=['POST'])
+def stop_simulation():
+    Scheduler().pause_simulation()
+    return jsonify({'code': 200, 'msg': 'Simulation Paused'})
 
 
 @ac_bp.route('/togglePower/<room_id>', methods=['POST'])
@@ -44,7 +46,6 @@ def toggle_power(room_id):
     room = Room.query.get(room_id)
 
     if power_status == 'ON':
-        # 补全参数，防止前端传空
         target = data.get('target_temp', room.target_temp)
         fan = data.get('fan_speed', room.fan_speed)
         scheduler.request_power(room_id, fan, target)
