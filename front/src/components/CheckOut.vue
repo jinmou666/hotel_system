@@ -11,14 +11,9 @@
         <div class="btn-group">
           <button @click="checkOut(id)" class="checkout-btn">办理退房</button>
           <div class="divider"></div>
-          <p class="label">CSV 报表 (Excel):</p>
+          <p class="label">数据导出 (Excel):</p>
           <button @click="download(id, 'bill')" class="export-btn">📄 账单</button>
           <button @click="download(id, 'detail')" class="export-btn">📊 详单</button>
-
-          <div class="divider"></div>
-          <p class="label">TXT 报表:</p>
-          <button @click="downloadTxt(id, 'bill')" class="export-btn-txt">📝 账单 (Txt)</button>
-          <button @click="downloadTxt(id, 'detail')" class="export-btn-txt">📝 详单 (Txt)</button>
         </div>
       </div>
     </div>
@@ -44,11 +39,6 @@ const download = (roomId, type) => {
   const endpoint = type === 'bill' ? 'exportBill' : 'exportDetail';
   window.open(`${baseURL}/${endpoint}/${roomId}`);
 };
-
-const downloadTxt = (roomId, type) => {
-  const endpoint = type === 'bill' ? 'exportBill/txt' : 'exportDetail/txt';
-  window.open(`${baseURL}/${endpoint}/${roomId}`);
-};
 </script>
 
 <style scoped>
@@ -67,11 +57,8 @@ const downloadTxt = (roomId, type) => {
 .divider { height: 1px; background: #eee; margin: 5px 0; }
 .label { font-size: 12px; color: #909399; margin: 0; text-align: left; }
 
-.export-btn { background: #67c23a; color: white; padding: 6px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; text-align: left; padding-left: 15px; }
+.export-btn { background: #67c23a; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; text-align: center; }
 .export-btn:hover { background: #85ce61; }
-
-.export-btn-txt { background: #409eff; color: white; padding: 6px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; text-align: left; padding-left: 15px; }
-.export-btn-txt:hover { background: #66b1ff; }
 
 .back-btn { background: #909399; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; }
 </style>

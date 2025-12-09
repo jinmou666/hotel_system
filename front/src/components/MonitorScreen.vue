@@ -15,10 +15,12 @@
         <button v-if="!isRunning && !isFinished" class="start-btn" @click="startTest">
           ▶ 开始执行测试用例
         </button>
-        <button v-else-if="isRunning" class="stop-btn" @click="stopTest">
-          ⏸ 暂停/停止
-        </button>
-        <span v-else class="finished-text">✅ 测试已结束 (温度已锁定)</span>
+        <span v-if="isRunning" class="running-text">
+          ⚠️ 测试运行中，请勿操作...
+        </span>
+        <span v-if="isFinished" class="finished-text">
+          ✅ 测试已结束 (温度已锁定)
+        </span>
       </div>
 
       <div class="right-actions">
@@ -100,6 +102,10 @@ const formatStatus = (status) => {
   return map[status] || status;
 };
 
+const isAllRoomsOff = () => {
+  return roomList.value.every(r => r.power_status === 'OFF');
+};
+
 const fetchStatus = async () => {
   const ids = ['101', '102', '103', '104', '105'];
   try {
@@ -155,22 +161,28 @@ const scheduleNextTick = () => {
 
         await executeEventsForTime(systemTime.value);
 
-        // 核心修正：即刻斩杀
         const maxTime = Math.max(...props.scriptEvents.map(e => e.time));
+
         if (systemTime.value >= maxTime) {
-             logs.value.push(">>> 脚本指令发送完毕，立即结束测试。");
-             // 不再等待，立即调用结束
-             await finishTest();
+             setTimeout(async () => {
+                 await fetchStatus();
+                 if (isAllRoomsOff()) {
+                    logs.value.push(">>> 全员关机，测试结束。");
+                    finishTest();
+                 } else {
+                    if (systemTime.value > maxTime + 1) {
+                        logs.value.push(">>> 超时强制结束。");
+                        finishTest();
+                    } else {
+                        logs.value.push(`>>> 等待关机... (T=${systemTime.value})`);
+                        scheduleNextTick();
+                    }
+                 }
+             }, 1500);
         } else {
             scheduleNextTick();
         }
     }, delay);
-};
-
-const stopTest = () => {
-  isRunning.value = false;
-  if (testTimeoutId) clearTimeout(testTimeoutId);
-  logs.value.push(">>> 测试被手动暂停");
 };
 
 const finishTest = async () => {
@@ -201,7 +213,7 @@ const executeEventsForTime = async (time) => {
         const events = roomEventsMap[roomId];
         for (const e of events) {
             try {
-                logs.value.push(`[发送] R${e.room} -> ${e.action}`);
+                logs.value.push(`[执行] R${e.room} -> ${e.action}`);
                 if (e.action === 'ON') {
                      await request.post(`/ac/setTemp/${e.room}`, { target_temp: e.temp });
                      await request.post(`/ac/setFanSpeed/${e.room}`, { fan_speed: e.fan });
@@ -255,7 +267,7 @@ th, td { border: 1px solid #eee; padding: 8px 4px; text-align: center; white-spa
 .tag.paused { background: #e6a23c; }
 .tag.finished { background: #909399; }
 .start-btn { background: #67c23a; color: white; padding: 10px 25px; border: none; border-radius: 4px; cursor: pointer; }
-.stop-btn { background: #e6a23c; color: white; padding: 10px 25px; border: none; border-radius: 4px; cursor: pointer; }
+.start-btn.disabled { background: #dcdfe6; color: #909399; cursor: not-allowed; }
 .next-btn { background: #409eff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
 .main-content { display: flex; gap: 20px; height: 500px; }
 .monitor-panel { flex: 3; overflow-y: auto; }
@@ -265,5 +277,6 @@ th, td { border: 1px solid #eee; padding: 8px 4px; text-align: center; white-spa
 .active-row { background-color: #f0f9eb; }
 .temp { color: #f56c6c; font-weight: bold; }
 .total { color: #67c23a; }
+.running-text { color: #e6a23c; font-weight: bold; margin-left: 10px; }
 .finished-text { color: #67c23a; font-weight: bold; margin-left: 10px; font-size: 1.1em; }
 </style>
