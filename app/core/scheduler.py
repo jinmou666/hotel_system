@@ -23,9 +23,7 @@ class Scheduler:
                     cls._instance.is_running = False
                     cls._instance.physics_paused = True
                     cls._instance.simulation_start_time = datetime.now()
-                    # 记录上一次物理计算的时间点
                     cls._instance.last_tick_time = datetime.now()
-
                     cls._instance.start_simulation()
         return cls._instance
 
@@ -41,7 +39,6 @@ class Scheduler:
 
     def resume_simulation(self):
         self.simulation_start_time = datetime.now()
-        # 恢复时重置 tick 时间，防止把暂停的时间算进去
         self.last_tick_time = datetime.now()
         self.physics_paused = False
         print(">>> [系统] 物理引擎启动！")
@@ -68,7 +65,6 @@ class Scheduler:
                 room.power_status = 'ON'
                 room.fee_rate = self._get_fee_rate(fan_speed)
                 db.session.commit()
-
                 with self._lock:
                     self._handle_scheduling(room.room_id)
                 return True
@@ -86,7 +82,6 @@ class Scheduler:
                 self._close_current_record(room)
                 room.power_status = 'OFF'
                 db.session.commit()
-
                 with self._lock:
                     self._remove_from_service(room_id)
                     self._remove_from_wait(room_id)
@@ -98,17 +93,16 @@ class Scheduler:
             finally:
                 db.session.remove()
 
-    # ================= 核心调度算法 =================
+    # ================= 调度逻辑 =================
 
     def _needs_service(self, room):
         curr = float(room.current_temp)
         target = float(room.target_temp)
-        # 只要没达到目标，或者处于回温重启状态，就需要服务
-        # 使用宽松判断，防止浮点数在目标值附近抖动导致频繁启停
+        epsilon = 0.01
         if self.current_mode == 'COOL':
-            return curr > target
+            return curr > (target + epsilon)
         else:
-            return curr < target
+            return curr < (target - epsilon)
 
     def _handle_scheduling(self, room_id):
         room = Room.query.get(room_id)
@@ -117,9 +111,7 @@ class Scheduler:
         self._remove_from_service(room_id)
         self._remove_from_wait(room_id)
 
-        # 检查是否需要服务（温控判断）
-        if not self._needs_service(room):
-            return
+        if not self._needs_service(room): return
 
         if len(self.service_queue) < SystemConstants.MAX_SERVICE:
             self._add_to_service(room)
@@ -133,22 +125,16 @@ class Scheduler:
             r_srv = Room.query.get(rid)
             p = self._get_priority(r_srv.fan_speed)
             d = self._get_service_duration(rid)
-
             if p < lowest_prio_val:
                 lowest_prio_val = p
                 lowest_rooms = [(rid, p, d)]
             elif p == lowest_prio_val:
                 lowest_rooms.append((rid, p, d))
 
-        print(f">>> [调度] R{room_id}(P{req_prio}) 申请，当前最低 P{lowest_prio_val}")
-
-        # 抢占逻辑：严格大于
         if req_prio > lowest_prio_val:
             lowest_rooms.sort(key=lambda x: x[2], reverse=True)
             target_to_kick = lowest_rooms[0][0]
-
             if target_to_kick:
-                print(f">>> [抢占] R{room_id} 抢占 R{target_to_kick}")
                 r_kicked = Room.query.get(target_to_kick)
                 self._move_to_wait(r_kicked)
                 self._add_to_service(room)
@@ -173,43 +159,44 @@ class Scheduler:
         candidates.sort(key=lambda x: (-x['prio'], x['time']))
         if candidates:
             best_room = candidates[0]['room']
-            print(f">>> [补位] R{best_room.room_id} 上位")
             self._move_to_service(best_room)
 
-    # ================= 物理引擎 (动态时间补偿版) =================
+    # ================= 物理引擎 (高频采样 + 误差修正) =================
 
     def _simulation_loop(self):
+        # 核心改动：提高采样频率到 0.2s (5Hz)
+        # 这意味着每次计算只推进 1.2秒系统时间，大幅减少过冲误差
+        step_real_sec = 0.2
+
         while self.is_running:
             if self.physics_paused:
                 time.sleep(1)
-                self.last_tick_time = datetime.now()  # 暂停时持续更新时间，防止恢复瞬间跳变
+                self.last_tick_time = datetime.now()
                 continue
 
             with db.app.app_context():
                 try:
-                    # 计算真实的物理时间差 (Wall Clock Sync)
                     now = datetime.now()
-                    step_real_sec = (now - self.last_tick_time).total_seconds()
+                    # 计算真实流逝时间，防止线程调度导致的误差
+                    actual_delta = (now - self.last_tick_time).total_seconds()
                     self.last_tick_time = now
 
-                    # 只有当时间差合理时才计算 (防止休眠过久导致突变)
-                    if 0 < step_real_sec < 5.0:
-                        self._tick(step_real_sec)
+                    # 钳位：如果卡顿太久，最多只算 1秒的物理量，防止瞬移
+                    if actual_delta > 1.0: actual_delta = 1.0
 
+                    if actual_delta > 0.01:
+                        self._tick(actual_delta)
                 except Exception as e:
                     print(f"Physics Error: {e}")
                 finally:
                     db.session.remove()
 
-            time.sleep(1)
+            time.sleep(step_real_sec)
 
     def _tick(self, step_real_sec):
-        # 1. 检查时间片
         with self._lock:
             self._tick_time_slice_check()
 
-        # 2. 动态计算系统时间增量
-        # 无论 Python 运行慢了还是快了，我们都按真实流逝的时间来计费
         delta_sys_sec = step_real_sec * SystemConstants.TIME_KX
 
         room_ids = []
@@ -231,34 +218,52 @@ class Scheduler:
         current_temp = float(room.current_temp)
         target_temp = float(room.target_temp)
 
-        # 核心修正：配置键值兼容处理 (int/str)
         try:
-            # 尝试用 int 查 (ac_simulation.py 风格)
             key = int(room.room_id)
             if self.current_mode == 'COOL':
                 initial_temp = SystemConstants.COOL_MODE_DEFAULTS['initial_temps'][key]
             else:
                 initial_temp = SystemConstants.HEAT_MODE_DEFAULTS['initial_temps'][key]
-        except KeyError:
-            # 兜底：尝试用 str 查
-            key = str(room.room_id)
-            if self.current_mode == 'COOL':
-                initial_temp = SystemConstants.COOL_MODE_DEFAULTS['initial_temps'].get(key, 30.0)
-            else:
-                initial_temp = SystemConstants.HEAT_MODE_DEFAULTS['initial_temps'].get(key, 10.0)
+        except:
+            initial_temp = 25.0
 
         if is_serving:
-            rate_per_min = self._get_temp_change_rate(room.fan_speed)
-            # 变化量 = (速度 / 60) * 时间
-            change = (rate_per_min / 60.0) * delta_sys_sec
+            rate = self._get_temp_change_rate(room.fan_speed)
+            # 理论变化量
+            temp_delta = (rate / 60.0) * delta_sys_sec
+
+            # === 误差修正：检查是否会过冲 ===
+            # 如果这一步走完会超过目标温度，我们只走“刚好到达”的那一步
+            # 并且只收“刚好到达”那一部分的钱
+
+            effective_time_sec = delta_sys_sec  # 实际有效计费时间
 
             if self.current_mode == 'COOL':
-                new_temp = current_temp - change
+                # 降温中
+                if (current_temp - temp_delta) < target_temp:
+                    # 会过冲，只计算到达 target 所需的时间
+                    needed_drop = current_temp - target_temp
+                    if needed_drop < 0: needed_drop = 0
+                    # 重新计算需要的秒数
+                    if rate > 0:
+                        effective_time_sec = (needed_drop / (rate / 60.0))
+                    new_temp = target_temp
+                else:
+                    new_temp = current_temp - temp_delta
             else:
-                new_temp = current_temp + change
+                # 升温中
+                if (current_temp + temp_delta) > target_temp:
+                    needed_rise = target_temp - current_temp
+                    if needed_rise < 0: needed_rise = 0
+                    if rate > 0:
+                        effective_time_sec = (needed_rise / (rate / 60.0))
+                    new_temp = target_temp
+                else:
+                    new_temp = current_temp + temp_delta
 
-            fee_per_min = self._get_fee_rate(room.fan_speed)
-            cost = (fee_per_min / 60.0) * delta_sys_sec
+            # 计费 (使用修正后的有效时间)
+            fee_rate = self._get_fee_rate(room.fan_speed)
+            cost = (fee_rate / 60.0) * effective_time_sec
 
             room.current_fee = float(room.current_fee) + cost
             room.total_fee = float(room.total_fee) + cost
@@ -266,26 +271,23 @@ class Scheduler:
             record = DetailRecord.query.filter_by(room_id=room.room_id, end_time=None).first()
             if record:
                 record.fee = float(record.fee) + cost
-                record.duration = int(record.duration) + int(delta_sys_sec)
+                record.duration = int(record.duration) + int(effective_time_sec)
         else:
-            # 回温
-            rate_recover = SystemConstants.RECOVER_RATE
-            step = (rate_recover / 60.0) * delta_sys_sec
-
+            # 回温 (不需要精确计费，直接走)
+            step = (SystemConstants.RECOVER_RATE / 60.0) * delta_sys_sec
             if self.current_mode == 'COOL':
-                # 制冷回温：升温
                 new_temp = current_temp + step
                 if new_temp > initial_temp: new_temp = initial_temp
             else:
-                # 制热回温：降温
                 new_temp = current_temp - step
                 if new_temp < initial_temp: new_temp = initial_temp
 
         room.current_temp = round(new_temp, 4)
 
-        # 自动温控达标
+        # 温控达标检查
         if is_serving:
             reached = False
+            # 严格比较
             if self.current_mode == 'COOL' and room.current_temp <= target_temp: reached = True
             if self.current_mode == 'HEAT' and room.current_temp >= target_temp: reached = True
 
@@ -295,22 +297,18 @@ class Scheduler:
                     self._remove_from_service(room.room_id)
                     self._schedule_next()
 
-        # 回温重启逻辑
+        # 回温重启逻辑 (1度)
         if room.power_status == 'ON' and \
                 room.room_id not in self.service_queue and \
                 room.room_id not in self.wait_queue:
-
             should_restart = False
-            # 宽松一点的判断 (0.99 而不是 1.0)，防止因为 0.999999 而没触发
             if self.current_mode == 'COOL' and room.current_temp >= (target_temp + 0.99): should_restart = True
             if self.current_mode == 'HEAT' and room.current_temp <= (target_temp - 0.99): should_restart = True
-
             if should_restart:
-                print(f">>> [温控] R{room.room_id} 回温到位，重启服务")
-                with self._lock:
-                    self._handle_scheduling(room.room_id)
+                print(f">>> [温控] R{room.room_id} 重启")
+                with self._lock: self._handle_scheduling(room.room_id)
 
-    # ... (辅助方法保持不变) ...
+    # ... (保持其他辅助方法不变) ...
     def _start_new_record(self, room):
         try:
             new_record = DetailRecord(
@@ -353,10 +351,9 @@ class Scheduler:
                             d = self._get_service_duration(sid)
                             if d > max_d: max_d = d; tid = sid
                     if tid:
-                        print(f">>> [轮转] R{wid} 替换 R{tid}")
                         r_wait = Room.query.get(wid)
-                        r_target = Room.query.get(tid)
-                        self._move_to_wait(r_target)
+                        r_targ = Room.query.get(tid)
+                        self._move_to_wait(r_targ)
                         self._move_to_service(r_wait)
 
     def _add_to_service(self, room):
@@ -430,14 +427,10 @@ class Scheduler:
             db.session.query(Invoice).delete()
             rooms = Room.query.all()
             for room in rooms:
-                # 兼容 int/str
                 str_id = str(room.room_id)
                 int_id = int(room.room_id)
-
-                # 优先匹配 config 里的 key (可能是 int 也可能是 str)
                 val = config['initial_temps'].get(int_id)
-                if val is None:
-                    val = config['initial_temps'].get(str_id)
+                if val is None: val = config['initial_temps'].get(str_id)
 
                 if val is not None:
                     room.current_temp = val
