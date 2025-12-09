@@ -27,7 +27,6 @@ class Room(db.Model):
     __tablename__ = 'room'
 
     room_id = db.Column(db.String(10), primary_key=True)
-    # 精度配合 Config 和 SQL
     current_temp = db.Column(db.Numeric(8, 4), default=22.0000)
     target_temp = db.Column(db.Numeric(8, 4), default=22.0000)
     fan_speed = db.Column(db.String(10), default='MEDIUM')
@@ -36,6 +35,9 @@ class Room(db.Model):
     current_fee = db.Column(db.Numeric(12, 4), default=0.0000)
     total_fee = db.Column(db.Numeric(12, 4), default=0.0000)
 
+    # 新增：记录当前活跃的会话ID (开机时生成，关机时清空)
+    active_session_id = db.Column(db.String(36), nullable=True)
+
     customer_id = db.Column(db.String(32), db.ForeignKey('customer.customer_id'))
     status = db.Column(db.String(20), default='AVAILABLE')
 
@@ -43,16 +45,15 @@ class Room(db.Model):
     invoices = db.relationship('Invoice', backref='room_ref', lazy=True)
 
     def to_dict(self):
-        # 内部高精度，返回给前端展示时保留2位
         return {
             'room_id': self.room_id,
-            'current_temp': round(float(self.current_temp), 2) if self.current_temp is not None else 0.0,
+            'current_temp': float(self.current_temp) if self.current_temp is not None else 0.0,
             'target_temp': float(self.target_temp) if self.target_temp is not None else 0.0,
             'fan_speed': self.fan_speed,
             'power_status': self.power_status,
             'fee_rate': float(self.fee_rate) if self.fee_rate is not None else 0.0,
-            'current_fee': round(float(self.current_fee), 2) if self.current_fee is not None else 0.0,
-            'total_fee': round(float(self.total_fee), 2) if self.total_fee is not None else 0.0,
+            'current_fee': float(self.current_fee) if self.current_fee is not None else 0.0,
+            'total_fee': float(self.total_fee) if self.total_fee is not None else 0.0,
             'customer_id': self.customer_id,
             'status': self.status
         }
@@ -68,6 +69,7 @@ class Room(db.Model):
         self.status = 'AVAILABLE'
         self.power_status = 'OFF'
         self.current_fee = 0.00
+        self.active_session_id = None
         db.session.commit()
         return self
 
@@ -77,9 +79,13 @@ class DetailRecord(db.Model):
 
     record_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     room_id = db.Column(db.String(10), db.ForeignKey('room.room_id'), nullable=False)
+
+    # 新增：会话ID，用于统计“多少次开关机”
+    session_id = db.Column(db.String(36), nullable=True)
+
     start_time = db.Column(db.DateTime, nullable=False)
     end_time = db.Column(db.DateTime)
-    duration = db.Column(db.Integer, default=0)
+    duration = db.Column(db.Float, default=0.0)
     fan_speed = db.Column(db.String(10), nullable=False)
     fee_rate = db.Column(db.Numeric(8, 4), nullable=False)
     fee = db.Column(db.Numeric(12, 4), default=0.0000)
@@ -105,6 +111,7 @@ class Invoice(db.Model):
     customer_id = db.Column(db.String(32), db.ForeignKey('customer.customer_id'), nullable=False)
     check_in_date = db.Column(db.DateTime, nullable=False)
     check_out_date = db.Column(db.DateTime, nullable=False)
+    stay_days = db.Column(db.Integer, default=1)
     accommodation_fee = db.Column(db.Numeric(12, 2), default=0.00)
     ac_fee = db.Column(db.Numeric(12, 4), default=0.0000)
     total_amount = db.Column(db.Numeric(12, 2), default=0.00)
@@ -117,6 +124,7 @@ class Invoice(db.Model):
             'customer_id': self.customer_id,
             'check_in_date': self.check_in_date.isoformat() if self.check_in_date else None,
             'check_out_date': self.check_out_date.isoformat() if self.check_out_date else None,
+            'stay_days': self.stay_days,
             'accommodation_fee': float(self.accommodation_fee) if self.accommodation_fee else None,
             'ac_fee': float(self.ac_fee) if self.ac_fee else None,
             'total_amount': float(self.total_amount) if self.total_amount else None,

@@ -24,16 +24,16 @@ def set_mode():
     return jsonify({'code': 200, 'msg': f'Reset to {mode} (Paused)'})
 
 
-# === 新增：启动物理引擎 ===
 @ac_bp.route('/startSimulation', methods=['POST'])
 def start_simulation():
-    Scheduler().resume_simulation()
+    # 使用新API，重置时间
+    Scheduler().start_simulation_api()
     return jsonify({'code': 200, 'msg': 'Simulation Started'})
 
 
 @ac_bp.route('/stopSimulation', methods=['POST'])
 def stop_simulation():
-    Scheduler().pause_simulation()
+    Scheduler().stop_simulation_api()
     return jsonify({'code': 200, 'msg': 'Simulation Paused'})
 
 

@@ -45,13 +45,15 @@ def export_bill(room_id):
     output = io.StringIO()
     output.write('\ufeff')
     writer = csv.writer(output)
-    writer.writerow(['房间号', '入住时间', '离开时间', '空调费', '住宿费', '总费用'])
+    writer.writerow(['房间号', '入住时间', '离开时间', '入住天数', '空调费', '住宿费', '总费用'])
     writer.writerow([
-        invoice.room_id, invoice.check_in_date, invoice.check_out_date,
+        invoice.room_id,
+        invoice.check_in_date.strftime('%Y-%m-%d %H:%M:%S'),
+        invoice.check_out_date.strftime('%Y-%m-%d %H:%M:%S'),
+        invoice.stay_days,
         f"{invoice.ac_fee:.2f}", f"{invoice.accommodation_fee:.2f}", f"{invoice.total_amount:.2f}"
     ])
-
-    return Response(output.getvalue(), mimetype="text/csv",
+    return Response(output.getvalue().encode('gbk', 'ignore'), mimetype="text/csv",
                     headers={"Content-Disposition": f"attachment;filename=bill_{room_id}.csv"})
 
 
@@ -70,20 +72,18 @@ def export_detail(room_id):
     for r in records:
         d_start = (r.start_time - sim_start).total_seconds()
         sys_start = (d_start * SystemConstants.TIME_KX) / 60.0
+        if sys_start < 0: sys_start = 0.0  # Clamp negative
 
-        if r.end_time:
-            d_end = (r.end_time - sim_start).total_seconds()
-            sys_end = (d_end * SystemConstants.TIME_KX) / 60.0
-        else:
-            sys_end = sys_start
+        duration_sec = float(r.duration)
+        sys_end = sys_start + (duration_sec / 60.0)  # 强制自洽
 
         fee = float(r.fee) if r.fee else 0.0
         cumulative += fee
 
         writer.writerow([
             r.room_id, f"{sys_start:.2f}", f"{sys_start:.2f}", f"{sys_end:.2f}",
-            r.duration, r.fan_speed, f"{float(r.fee_rate):.2f}", f"{fee:.2f}", f"{cumulative:.2f}"
+            f"{duration_sec:.0f}", r.fan_speed, f"{float(r.fee_rate):.2f}", f"{fee:.2f}", f"{cumulative:.2f}"
         ])
 
-    return Response(output.getvalue(), mimetype="text/csv",
+    return Response(output.getvalue().encode('gbk', 'ignore'), mimetype="text/csv",
                     headers={"Content-Disposition": f"attachment;filename=detail_{room_id}.csv"})

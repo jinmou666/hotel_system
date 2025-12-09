@@ -16,7 +16,7 @@
           ▶ 开始执行测试用例
         </button>
         <span v-if="isRunning" class="running-text">
-          ⚠️ 测试运行中，请勿操作...
+          ⚠️ 测试运行中...
         </span>
         <span v-if="isFinished" class="finished-text">
           ✅ 测试已结束 (温度已锁定)
@@ -90,6 +90,8 @@ const logRef = ref(null);
 let monitorTimer = null;
 let testTimeoutId = null;
 let startTime = 0;
+
+// 现实 10秒 = 系统 1分钟 (Config TIME_KX = 6.0)
 const TICK_INTERVAL = 10000;
 
 const formatNum = (val) => {
@@ -103,6 +105,7 @@ const formatStatus = (status) => {
 };
 
 const isAllRoomsOff = () => {
+  if (!roomList.value || roomList.value.length === 0) return false;
   return roomList.value.every(r => r.power_status === 'OFF');
 };
 
@@ -142,23 +145,24 @@ const startTest = async () => {
   isRunning.value = true;
   logs.value.push(`>>> 测试启动`);
   startTime = Date.now();
-  systemTime.value = 0;
 
+  systemTime.value = 0;
   await executeEventsForTime(0);
-  scheduleNextTick();
+
+  scheduleNextTick(1);
 };
 
-const scheduleNextTick = () => {
+const scheduleNextTick = (targetSysTime) => {
     if (!isRunning.value) return;
-    systemTime.value++;
 
-    const targetTime = startTime + (systemTime.value * TICK_INTERVAL);
+    const targetPhysicalTime = startTime + (targetSysTime * TICK_INTERVAL);
     const now = Date.now();
-    const delay = Math.max(0, targetTime - now);
+    const delay = Math.max(0, targetPhysicalTime - now);
 
     testTimeoutId = setTimeout(async () => {
         if (!isRunning.value) return;
 
+        systemTime.value = targetSysTime;
         await executeEventsForTime(systemTime.value);
 
         const maxTime = Math.max(...props.scriptEvents.map(e => e.time));
@@ -170,17 +174,17 @@ const scheduleNextTick = () => {
                     logs.value.push(">>> 全员关机，测试结束。");
                     finishTest();
                  } else {
-                    if (systemTime.value > maxTime + 1) {
+                    if (systemTime.value > maxTime + 2) {
                         logs.value.push(">>> 超时强制结束。");
                         finishTest();
                     } else {
-                        logs.value.push(`>>> 等待关机... (T=${systemTime.value})`);
-                        scheduleNextTick();
+                        logs.value.push(`>>> 等待关机...`);
+                        scheduleNextTick(targetSysTime + 1);
                     }
                  }
-             }, 1500);
+             }, 3000);
         } else {
-            scheduleNextTick();
+            scheduleNextTick(targetSysTime + 1);
         }
     }, delay);
 };
@@ -199,6 +203,9 @@ const finishTest = async () => {
   }
 };
 
+// --- 核心修复：增加指令间隔 ---
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 const executeEventsForTime = async (time) => {
   const currentEvents = props.scriptEvents.filter(e => e.time === time);
   if (currentEvents.length > 0) {
@@ -209,15 +216,19 @@ const executeEventsForTime = async (time) => {
         roomEventsMap[e.room].push(e);
     });
 
-    const promises = Object.keys(roomEventsMap).map(async (roomId) => {
+    // 串行化执行所有房间的指令，防止瞬时并发冲垮后端
+    const roomIds = Object.keys(roomEventsMap);
+    for (const roomId of roomIds) {
         const events = roomEventsMap[roomId];
         for (const e of events) {
             try {
-                logs.value.push(`[执行] R${e.room} -> ${e.action}`);
+                // 每条指令前给后端 300ms 喘息时间
+                // 这在 10s 的长周期里完全可以接受，但能极大降低冲突率
+                await sleep(300);
+
+                logs.value.push(`[执行] R${e.room} -> ${e.action} ${e.temp || ''} ${e.fan || ''}`);
                 if (e.action === 'ON') {
-                     await request.post(`/ac/setTemp/${e.room}`, { target_temp: e.temp });
-                     await request.post(`/ac/setFanSpeed/${e.room}`, { fan_speed: e.fan });
-                     await request.post(`/ac/togglePower/${e.room}`, { power_status: 'ON' });
+                     await request.post(`/ac/togglePower/${e.room}`, { power_status: 'ON', target_temp: e.temp, fan_speed: e.fan });
                 } else if (e.action === 'OFF') {
                      await request.post(`/ac/togglePower/${e.room}`, { power_status: 'OFF' });
                 } else if (e.action === 'TEMP') {
@@ -229,9 +240,7 @@ const executeEventsForTime = async (time) => {
                 logs.value.push(`[超时/失败] R${e.room}`);
             }
         }
-    });
-
-    await Promise.all(promises);
+    }
     nextTick(() => { if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight; });
   }
 };
@@ -267,7 +276,6 @@ th, td { border: 1px solid #eee; padding: 8px 4px; text-align: center; white-spa
 .tag.paused { background: #e6a23c; }
 .tag.finished { background: #909399; }
 .start-btn { background: #67c23a; color: white; padding: 10px 25px; border: none; border-radius: 4px; cursor: pointer; }
-.start-btn.disabled { background: #dcdfe6; color: #909399; cursor: not-allowed; }
 .next-btn { background: #409eff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
 .main-content { display: flex; gap: 20px; height: 500px; }
 .monitor-panel { flex: 3; overflow-y: auto; }
