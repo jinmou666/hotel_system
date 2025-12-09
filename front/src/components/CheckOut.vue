@@ -29,7 +29,7 @@ const baseURL = 'http://127.0.0.1:5000/api/front';
 const checkOut = async (roomId) => {
   try {
     const res = await request.post('/front/checkOut', { room_id: roomId });
-    alert(`退房成功！\n总费用：¥${res.data.total_amount}`);
+    alert(`退房成功！\n总费用：¥${res.data.total_amount}\n(含住宿费 ¥${res.data.accommodation_fee})`);
   } catch (err) {
     alert('退房失败');
   }

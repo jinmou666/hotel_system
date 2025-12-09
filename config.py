@@ -12,6 +12,9 @@ class Config:
     }
 
 class SystemConstants:
+    """
+    系统核心参数配置
+    """
     TIME_KX = 6.0
     MAX_SERVICE = 3
     MAX_WAIT = 2
@@ -27,7 +30,15 @@ class SystemConstants:
 
     RECOVER_RATE = 0.5
 
-    # 双重键值保险：同时提供 int 和 str 键，防止匹配失败
+    # === 新增：房间日租金配置 ===
+    ROOM_DAILY_RATES = {
+        '101': 100.0,
+        '102': 125.0,
+        '103': 150.0,
+        '104': 200.0,
+        '105': 100.0
+    }
+
     COOL_MODE_DEFAULTS = {
         'default_target': 25.0,
         'temp_limit_min': 18.0,

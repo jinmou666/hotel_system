@@ -16,7 +16,7 @@
           ▶ 开始执行测试用例
         </button>
         <span v-if="isRunning" class="running-text">
-          ⚠️ 测试运行中，请勿操作...
+          ⚠️ 测试运行中...
         </span>
         <span v-if="isFinished" class="finished-text">
           ✅ 测试已结束 (温度已锁定)
@@ -267,7 +267,6 @@ th, td { border: 1px solid #eee; padding: 8px 4px; text-align: center; white-spa
 .tag.paused { background: #e6a23c; }
 .tag.finished { background: #909399; }
 .start-btn { background: #67c23a; color: white; padding: 10px 25px; border: none; border-radius: 4px; cursor: pointer; }
-.start-btn.disabled { background: #dcdfe6; color: #909399; cursor: not-allowed; }
 .next-btn { background: #409eff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
 .main-content { display: flex; gap: 20px; height: 500px; }
 .monitor-panel { flex: 3; overflow-y: auto; }
