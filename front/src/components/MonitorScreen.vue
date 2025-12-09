@@ -91,9 +91,7 @@ let monitorTimer = null;
 let testTimeoutId = null;
 let startTime = 0;
 
-// === 核心修正：改回 10000ms (10秒) ===
-// 现实 10秒 = 系统 1分钟
-// 这样才能匹配后端的 TIME_KX = 6.0
+// 现实 10秒 = 系统 1分钟 (Config TIME_KX = 6.0)
 const TICK_INTERVAL = 10000;
 
 const formatNum = (val) => {
@@ -151,14 +149,12 @@ const startTest = async () => {
   systemTime.value = 0;
   await executeEventsForTime(0);
 
-  // 规划下一分钟
   scheduleNextTick(1);
 };
 
 const scheduleNextTick = (targetSysTime) => {
     if (!isRunning.value) return;
 
-    // 严谨的时间轴计算：startTime + (分钟数 * 10秒)
     const targetPhysicalTime = startTime + (targetSysTime * TICK_INTERVAL);
     const now = Date.now();
     const delay = Math.max(0, targetPhysicalTime - now);
@@ -172,7 +168,6 @@ const scheduleNextTick = (targetSysTime) => {
         const maxTime = Math.max(...props.scriptEvents.map(e => e.time));
 
         if (systemTime.value >= maxTime) {
-             // 给予缓冲时间，等待最后状态同步
              setTimeout(async () => {
                  await fetchStatus();
                  if (isAllRoomsOff()) {
@@ -187,7 +182,7 @@ const scheduleNextTick = (targetSysTime) => {
                         scheduleNextTick(targetSysTime + 1);
                     }
                  }
-             }, 3000); // 3秒缓冲
+             }, 3000);
         } else {
             scheduleNextTick(targetSysTime + 1);
         }
@@ -208,6 +203,9 @@ const finishTest = async () => {
   }
 };
 
+// --- 核心修复：增加指令间隔 ---
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 const executeEventsForTime = async (time) => {
   const currentEvents = props.scriptEvents.filter(e => e.time === time);
   if (currentEvents.length > 0) {
@@ -218,10 +216,16 @@ const executeEventsForTime = async (time) => {
         roomEventsMap[e.room].push(e);
     });
 
-    const promises = Object.keys(roomEventsMap).map(async (roomId) => {
+    // 串行化执行所有房间的指令，防止瞬时并发冲垮后端
+    const roomIds = Object.keys(roomEventsMap);
+    for (const roomId of roomIds) {
         const events = roomEventsMap[roomId];
         for (const e of events) {
             try {
+                // 每条指令前给后端 300ms 喘息时间
+                // 这在 10s 的长周期里完全可以接受，但能极大降低冲突率
+                await sleep(300);
+
                 logs.value.push(`[执行] R${e.room} -> ${e.action} ${e.temp || ''} ${e.fan || ''}`);
                 if (e.action === 'ON') {
                      await request.post(`/ac/togglePower/${e.room}`, { power_status: 'ON', target_temp: e.temp, fan_speed: e.fan });
@@ -236,9 +240,7 @@ const executeEventsForTime = async (time) => {
                 logs.value.push(`[超时/失败] R${e.room}`);
             }
         }
-    });
-
-    await Promise.all(promises);
+    }
     nextTick(() => { if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight; });
   }
 };

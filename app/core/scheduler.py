@@ -59,20 +59,17 @@ class Scheduler:
     # ================= 接口方法 =================
 
     def request_power(self, room_id, fan_speed, target_temp):
-        # 1. 数据库更新 (独立事务)
         with db.app.app_context():
             try:
                 room = Room.query.get(room_id)
                 if not room: return False
 
-                # 必须立即关闭旧记录并提交
                 self._close_current_record(room.room_id)
 
                 if room.power_status == 'OFF' or not room.active_session_id:
                     room.active_session_id = str(uuid.uuid4())
 
                 room.target_temp = float(target_temp)
-                # 关键修复：强制清洗数据，防止 "HIGH " 这种带空格的情况
                 clean_fan = str(fan_speed).strip().upper()
                 room.fan_speed = clean_fan
                 room.power_status = 'ON'
@@ -87,7 +84,6 @@ class Scheduler:
                 print(f"DB Error R{room_id}: {e}")
                 return False
 
-        # 2. 调度逻辑 (加锁，但内部不进行耗时DB操作)
         with self._lock:
             with db.app.app_context():
                 room = Room.query.get(room_id)
@@ -103,7 +99,6 @@ class Scheduler:
         with db.app.app_context():
             try:
                 self._close_current_record(room_id)
-
                 room = Room.query.get(room_id)
                 if room:
                     room.power_status = 'OFF'
@@ -120,7 +115,7 @@ class Scheduler:
             self._schedule_next()
         return True
 
-    # ================= 调度核心 (需在锁内调用) =================
+    # ================= 调度核心 =================
 
     def _handle_scheduling(self, room_id):
         room = Room.query.get(room_id)
@@ -135,9 +130,7 @@ class Scheduler:
             self._add_to_service(room, original_start_time=old_svc_time)
             return
 
-        # --- 抢占逻辑 ---
         req_prio = self._get_priority(room.fan_speed)
-
         lowest_prio_val = 999
         candidates = []
 
@@ -157,7 +150,6 @@ class Scheduler:
         if req_prio > lowest_prio_val:
             candidates.sort(key=lambda x: x[2], reverse=True)
             target_to_kick = candidates[0][0]
-
             print(f">>> [Preempt] R{room_id} kicks R{target_to_kick}")
             r_kicked = Room.query.get(target_to_kick)
             self._move_to_wait(r_kicked)
@@ -177,7 +169,6 @@ class Scheduler:
                 if not r or not self._needs_service(r):
                     self.wait_queue.remove(rid)
                     continue
-
                 p = self._get_priority(r.fan_speed)
                 t = self.wait_start_times.get(rid, datetime.now())
                 candidates.append({'rid': rid, 'prio': p, 'time': t, 'room': r})
@@ -191,76 +182,78 @@ class Scheduler:
 
     def _check_dynamic_preemption(self):
         if not self.wait_queue: return
+        # 已在 context 中调用
 
-        with db.app.app_context():
-            min_serv = None
-            for rid in self.service_queue:
-                r = Room.query.get(rid)
-                if not r: continue
-                p = self._get_priority(r.fan_speed)
-                d = self._get_service_duration(rid)
+        # 1. 找最弱的服务者
+        min_serv = None
+        for rid in self.service_queue:
+            r = Room.query.get(rid)
+            if not r: continue
+            p = self._get_priority(r.fan_speed)
+            d = self._get_service_duration(rid)
 
-                if min_serv is None or p < min_serv['prio']:
-                    min_serv = {'rid': rid, 'prio': p, 'dur': d}
-                elif p == min_serv['prio'] and d > min_serv['dur']:
-                    min_serv = {'rid': rid, 'prio': p, 'dur': d}
+            if min_serv is None or p < min_serv['prio']:
+                min_serv = {'rid': rid, 'prio': p, 'dur': d}
+            elif p == min_serv['prio'] and d > min_serv['dur']:
+                min_serv = {'rid': rid, 'prio': p, 'dur': d}
 
-            if not min_serv: return
+        if not min_serv: return
 
-            max_wait = None
-            for rid in self.wait_queue:
-                r = Room.query.get(rid)
-                if not r or not self._needs_service(r): continue
-                p = self._get_priority(r.fan_speed)
+        # 2. 找最强的等待者
+        max_wait = None
+        for rid in self.wait_queue:
+            r = Room.query.get(rid)
+            if not r or not self._needs_service(r): continue
+            p = self._get_priority(r.fan_speed)
 
-                if max_wait is None or p > max_wait['prio']:
-                    max_wait = {'rid': rid, 'prio': p}
+            if max_wait is None or p > max_wait['prio']:
+                max_wait = {'rid': rid, 'prio': p}
 
-            if not max_wait: return
+        if not max_wait: return
 
-            if max_wait['prio'] > min_serv['prio']:
-                print(f">>> [Dynamic Swap] R{max_wait['rid']} replaces R{min_serv['rid']}")
-                r_w = Room.query.get(max_wait['rid'])
-                r_s = Room.query.get(min_serv['rid'])
-                self._move_to_wait(r_s)
-                self._move_to_service(r_w)
+        if max_wait['prio'] > min_serv['prio']:
+            print(f">>> [Dynamic Swap] R{max_wait['rid']} replaces R{min_serv['rid']}")
+            r_w = Room.query.get(max_wait['rid'])
+            r_s = Room.query.get(min_serv['rid'])
+            self._move_to_wait(r_s)
+            self._move_to_service(r_w)
 
     def _tick_time_slice_check(self):
+        # 已在 context 中调用
         now = datetime.now()
-        with db.app.app_context():
-            for wid in list(self.wait_queue):
-                st = self.wait_start_times.get(wid)
-                if not st: continue
+        for wid in list(self.wait_queue):
+            st = self.wait_start_times.get(wid)
+            if not st: continue
 
-                dur = (now - st).total_seconds() * SystemConstants.TIME_KX
-                if dur >= SystemConstants.TIME_SLICE:
-                    wroom = Room.query.get(wid)
-                    if not wroom: continue
-                    wprio = self._get_priority(wroom.fan_speed)
+            dur = (now - st).total_seconds() * SystemConstants.TIME_KX
+            if dur >= SystemConstants.TIME_SLICE:
+                wroom = Room.query.get(wid)
+                if not wroom: continue
+                wprio = self._get_priority(wroom.fan_speed)
 
-                    target_sid = None
-                    max_d = -1
+                target_sid = None
+                max_d = -1
 
-                    for sid in self.service_queue:
-                        sroom = Room.query.get(sid)
-                        if not sroom: continue
-                        sprio = self._get_priority(sroom.fan_speed)
+                for sid in self.service_queue:
+                    sroom = Room.query.get(sid)
+                    if not sroom: continue
+                    sprio = self._get_priority(sroom.fan_speed)
 
-                        if sprio == wprio:
-                            d = self._get_service_duration(sid)
-                            if d > max_d:
-                                max_d = d
-                                target_sid = sid
+                    if sprio == wprio:
+                        d = self._get_service_duration(sid)
+                        if d > max_d:
+                            max_d = d
+                            target_sid = sid
 
-                    if target_sid:
-                        print(f">>> [RR Slice] R{wid} rotates R{target_sid}")
-                        r_wait = Room.query.get(wid)
-                        r_serv = Room.query.get(target_sid)
-                        self._move_to_wait(r_serv)
-                        self._move_to_service(r_wait)
-                        return
+                if target_sid:
+                    print(f">>> [RR Slice] R{wid} rotates R{target_sid}")
+                    r_wait = Room.query.get(wid)
+                    r_serv = Room.query.get(target_sid)
+                    self._move_to_wait(r_serv)
+                    self._move_to_service(r_wait)
+                    return
 
-                        # ================= 物理循环 =================
+                    # ================= 物理循环 (核心优化) =================
 
     def _simulation_loop(self):
         step_real_sec = 0.2
@@ -270,28 +263,33 @@ class Scheduler:
                 self.last_tick_time = datetime.now()
                 continue
 
+            # 阶段 1: 计算物理 (写DB) - 独立事务
             with db.app.app_context():
                 try:
                     now = datetime.now()
                     actual_delta = (now - self.last_tick_time).total_seconds()
-                    self.last_tick_time = now
-
-                    if actual_delta > 1.0: actual_delta = 1.0
 
                     if actual_delta > 0.05:
+                        self.last_tick_time = now
+                        if actual_delta > 1.0: actual_delta = 1.0
                         delta_sys_sec = actual_delta * SystemConstants.TIME_KX
-
-                        # 1. 物理计算
                         self._update_all_physics(delta_sys_sec)
-
-                        # 2. 调度检查
-                        with self._lock:
-                            self._tick_time_slice_check()
-                            self._check_dynamic_preemption()
-
                 except Exception as e:
-                    print(f"Loop Err: {e}")
+                    print(f"Phys Loop Err: {e}")
 
+            # 主动让出 CPU 和 DB 连接，给 HTTP 请求机会
+            time.sleep(0.02)
+
+            # 阶段 2: 调度检查 (读DB + 内存锁) - 独立事务
+            with db.app.app_context():
+                try:
+                    with self._lock:
+                        self._tick_time_slice_check()
+                        self._check_dynamic_preemption()
+                except Exception as e:
+                    pass
+
+            # 主循环休眠
             time.sleep(step_real_sec)
 
     def _update_all_physics(self, delta_sys_sec):
@@ -315,8 +313,6 @@ class Scheduler:
             initial_temp = 25.0
 
         if is_serving:
-            # 1. 温度变化
-            # 确保获取风速时也清洗数据
             clean_fan = str(room.fan_speed).strip().upper()
             rate = self._get_temp_change_rate(clean_fan)
             temp_delta = (rate / 60.0) * delta_sys_sec
@@ -339,21 +335,16 @@ class Scheduler:
                 else:
                     new_temp = current_temp + temp_delta
 
-            # 2. 费用计算
             fee_rate_per_min = self._get_fee_rate(clean_fan)
             cost = (fee_rate_per_min / 60.0) * effective_time_sec
 
             room.current_fee = float(room.current_fee) + cost
             room.total_fee = float(room.total_fee) + cost
 
-            # 3. 详单更新
             record = DetailRecord.query.filter_by(room_id=room.room_id, end_time=None).first()
             if record:
                 record.fee = float(record.fee) + cost
                 record.duration = float(record.duration) + effective_time_sec
-                # DEBUG: 如果你还是怀疑数据，请看这里打印的值
-                # print(f"[DEBUG] R{room.room_id} Fan:{clean_fan} Rate:{fee_rate_per_min} Cost:+{cost:.4f}")
-
         else:
             step = (SystemConstants.RECOVER_RATE / 60.0) * delta_sys_sec
             if self.current_mode == 'COOL':
@@ -413,14 +404,11 @@ class Scheduler:
                 self.service_start_times[room.room_id] = original_start_time
             else:
                 self.service_start_times[room.room_id] = datetime.now()
-
             self._start_new_record(room)
 
     def _start_new_record(self, room):
         try:
-            # 强制 commit 之前的，防止事务交叉
             self._close_current_record(room.room_id)
-
             clean_fan = str(room.fan_speed).strip().upper()
             new_record = DetailRecord(
                 room_id=room.room_id, session_id=room.active_session_id,
@@ -429,10 +417,9 @@ class Scheduler:
                 fee=0.0, duration=0.0
             )
             db.session.add(new_record)
-            db.session.commit()  # FORCE COMMIT
+            db.session.commit()
         except Exception as e:
             db.session.rollback()
-            print(f"Start Record Error: {e}")
 
     def _close_current_record(self, room_id):
         try:
@@ -440,7 +427,7 @@ class Scheduler:
             for r in records:
                 r.end_time = datetime.now()
                 db.session.add(r)
-            db.session.commit()  # FORCE COMMIT
+            db.session.commit()
         except Exception as e:
             db.session.rollback()
 
@@ -474,21 +461,17 @@ class Scheduler:
         return (datetime.now() - start).total_seconds()
 
     def _get_priority(self, fan):
-        # 鲁棒性增强
         f = str(fan).strip().upper()
         if f == 'HIGH': return 3
         if f in ['MEDIUM', 'MID']: return 2
         return 1
 
     def _get_fee_rate(self, fan):
-        # 关键修复：确保 "HIGH" 还是 "HIGH " 都能正确识别
         if not fan: return 0.5
         f = str(fan).strip().upper()
-
         if f == 'HIGH': return float(SystemConstants.FEE_RATE_HIGH)
         if f in ['MEDIUM', 'MID']: return float(SystemConstants.FEE_RATE_MID)
         if f == 'LOW': return float(SystemConstants.FEE_RATE_LOW)
-        # 如果什么都不是，默认 0.5 (这就是之前减半的原因)
         return 0.5
 
     def _get_temp_change_rate(self, fan):
