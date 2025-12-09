@@ -90,6 +90,10 @@ const logRef = ref(null);
 let monitorTimer = null;
 let testTimeoutId = null;
 let startTime = 0;
+
+// === 核心修正：改回 10000ms (10秒) ===
+// 现实 10秒 = 系统 1分钟
+// 这样才能匹配后端的 TIME_KX = 6.0
 const TICK_INTERVAL = 10000;
 
 const formatNum = (val) => {
@@ -103,6 +107,7 @@ const formatStatus = (status) => {
 };
 
 const isAllRoomsOff = () => {
+  if (!roomList.value || roomList.value.length === 0) return false;
   return roomList.value.every(r => r.power_status === 'OFF');
 };
 
@@ -142,45 +147,49 @@ const startTest = async () => {
   isRunning.value = true;
   logs.value.push(`>>> 测试启动`);
   startTime = Date.now();
-  systemTime.value = 0;
 
+  systemTime.value = 0;
   await executeEventsForTime(0);
-  scheduleNextTick();
+
+  // 规划下一分钟
+  scheduleNextTick(1);
 };
 
-const scheduleNextTick = () => {
+const scheduleNextTick = (targetSysTime) => {
     if (!isRunning.value) return;
-    systemTime.value++;
 
-    const targetTime = startTime + (systemTime.value * TICK_INTERVAL);
+    // 严谨的时间轴计算：startTime + (分钟数 * 10秒)
+    const targetPhysicalTime = startTime + (targetSysTime * TICK_INTERVAL);
     const now = Date.now();
-    const delay = Math.max(0, targetTime - now);
+    const delay = Math.max(0, targetPhysicalTime - now);
 
     testTimeoutId = setTimeout(async () => {
         if (!isRunning.value) return;
 
+        systemTime.value = targetSysTime;
         await executeEventsForTime(systemTime.value);
 
         const maxTime = Math.max(...props.scriptEvents.map(e => e.time));
 
         if (systemTime.value >= maxTime) {
+             // 给予缓冲时间，等待最后状态同步
              setTimeout(async () => {
                  await fetchStatus();
                  if (isAllRoomsOff()) {
                     logs.value.push(">>> 全员关机，测试结束。");
                     finishTest();
                  } else {
-                    if (systemTime.value > maxTime + 1) {
+                    if (systemTime.value > maxTime + 2) {
                         logs.value.push(">>> 超时强制结束。");
                         finishTest();
                     } else {
-                        logs.value.push(`>>> 等待关机... (T=${systemTime.value})`);
-                        scheduleNextTick();
+                        logs.value.push(`>>> 等待关机...`);
+                        scheduleNextTick(targetSysTime + 1);
                     }
                  }
-             }, 1500);
+             }, 3000); // 3秒缓冲
         } else {
-            scheduleNextTick();
+            scheduleNextTick(targetSysTime + 1);
         }
     }, delay);
 };
@@ -213,11 +222,9 @@ const executeEventsForTime = async (time) => {
         const events = roomEventsMap[roomId];
         for (const e of events) {
             try {
-                logs.value.push(`[执行] R${e.room} -> ${e.action}`);
+                logs.value.push(`[执行] R${e.room} -> ${e.action} ${e.temp || ''} ${e.fan || ''}`);
                 if (e.action === 'ON') {
-                     await request.post(`/ac/setTemp/${e.room}`, { target_temp: e.temp });
-                     await request.post(`/ac/setFanSpeed/${e.room}`, { fan_speed: e.fan });
-                     await request.post(`/ac/togglePower/${e.room}`, { power_status: 'ON' });
+                     await request.post(`/ac/togglePower/${e.room}`, { power_status: 'ON', target_temp: e.temp, fan_speed: e.fan });
                 } else if (e.action === 'OFF') {
                      await request.post(`/ac/togglePower/${e.room}`, { power_status: 'OFF' });
                 } else if (e.action === 'TEMP') {
