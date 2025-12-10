@@ -1,8 +1,8 @@
 <template>
   <div class="checkout-container">
-    <div class="top-bar">
-      <h3>第五步：结账离店 & 报表导出</h3>
-      <button class="back-btn" @click="$emit('prev')">← 返回监控</button>
+    <div class="page-header">
+      <h3>结账离店</h3>
+      <p class="subtitle">账单结算与报表导出</p>
     </div>
 
     <div class="room-list">
@@ -42,7 +42,11 @@ const download = (roomId, type) => {
 </script>
 
 <style scoped>
-.top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+.checkout-container { padding: 20px; }
+.page-header { margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+.page-header h3 { margin: 0; color: #303133; }
+.subtitle { margin: 5px 0 0; font-size: 13px; color: #909399; }
+
 .room-list { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
 .checkout-card {
   border: 1px solid #e4e7ed; padding: 20px; border-radius: 8px;
@@ -59,6 +63,4 @@ const download = (roomId, type) => {
 
 .export-btn { background: #67c23a; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; text-align: center; }
 .export-btn:hover { background: #85ce61; }
-
-.back-btn { background: #909399; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; }
 </style>

@@ -2,29 +2,13 @@
   <div class="monitor-screen">
     <div class="top-control-bar">
       <div class="left-info">
-        <h3>第四步：实时监控 & 测试执行</h3>
+        <h3>实时监控大屏</h3>
         <div class="status-box">
            系统时间: <span class="time">{{ systemTime }} min</span>
-           <span v-if="isRunning" class="tag running">运行中</span>
-           <span v-else-if="isFinished" class="tag finished">已结束</span>
-           <span v-else class="tag paused">等待启动</span>
+           <span v-if="isRunning" class="tag running">测试运行中</span>
+           <span v-else-if="isFinished" class="tag finished">测试结束</span>
+           <span v-else class="tag paused">等待指令</span>
         </div>
-      </div>
-
-      <div class="center-actions">
-        <button v-if="!isRunning && !isFinished" class="start-btn" @click="startTest">
-          ▶ 开始执行测试用例
-        </button>
-        <span v-if="isRunning" class="running-text">
-          ⚠️ 测试运行中...
-        </span>
-        <span v-if="isFinished" class="finished-text">
-          ✅ 测试已结束 (温度已锁定)
-        </span>
-      </div>
-
-      <div class="right-actions">
-        <button class="next-btn" @click="$emit('next')">进入结账环节 →</button>
       </div>
     </div>
 
@@ -61,38 +45,66 @@
           </tbody>
         </table>
       </div>
-
-      <div class="log-panel">
-        <div class="log-header">执行日志 ({{ scriptEvents.length }} 条待执行)</div>
-        <div class="log-content" ref="logRef">
-          <div v-for="(log, i) in logs" :key="i" class="log-item">{{ log }}</div>
-        </div>
-      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, nextTick, watch, onActivated } from 'vue';
 import request from '../utils/request';
 
+defineOptions({ name: 'MonitorScreen' });
+
 const props = defineProps({
-  scriptEvents: { type: Array, default: () => [] }
+  scriptEvents: { type: Array, default: () => [] },
+  startTrigger: { type: Number, default: 0 },
+  resetTrigger: { type: Number, default: 0 }
 });
 
 const roomList = ref([]);
-const logs = ref(['>>> 等待开始...']);
+const logs = ref([]);
 const systemTime = ref(0);
 const isRunning = ref(false);
 const isFinished = ref(false);
-const logRef = ref(null);
+
+// 核心修复：本地记录上一次处理的 trigger 值，防止重复执行或错过执行
+const lastProcessedTrigger = ref(0);
 
 let monitorTimer = null;
 let testTimeoutId = null;
 let startTime = 0;
 
-// 现实 10秒 = 系统 1分钟 (Config TIME_KX = 6.0)
 const TICK_INTERVAL = 10000;
+
+// --- 统一的启动检查逻辑 ---
+const checkAndStart = () => {
+  // 如果父组件传来的 trigger 大于我们上一次处理的 trigger，说明有新指令
+  if (props.startTrigger > lastProcessedTrigger.value && props.scriptEvents.length > 0) {
+    lastProcessedTrigger.value = props.startTrigger; // 更新本地记录
+    startTest();
+  }
+};
+
+// 1. 监听器：处理组件已在活跃状态时的信号
+watch(() => props.startTrigger, checkAndStart);
+
+// 2. 激活钩子：处理组件刚挂载或从后台切回时的信号 (修复第一次点击无效的问题)
+onActivated(() => {
+  checkAndStart();
+  // 每次切回来也刷新一下状态
+  fetchStatus();
+});
+
+// --- 监听重置信号 ---
+watch(() => props.resetTrigger, (newVal) => {
+  if (newVal > 0) {
+    isRunning.value = false;
+    isFinished.value = false;
+    if (testTimeoutId) clearTimeout(testTimeoutId);
+    systemTime.value = 0;
+    fetchStatus();
+  }
+});
 
 const formatNum = (val) => {
   if (val === undefined || val === null) return '0.00';
@@ -129,21 +141,15 @@ const fetchStatus = async () => {
 };
 
 const startTest = async () => {
-  if (props.scriptEvents.length === 0) {
-    alert("未检测到脚本数据！");
-    return;
-  }
-
   try {
     await request.post('/ac/startSimulation');
-    logs.value.push(">>> 物理引擎已启动！");
   } catch(e) {
     alert("启动失败");
     return;
   }
 
   isRunning.value = true;
-  logs.value.push(`>>> 测试启动`);
+  isFinished.value = false;
   startTime = Date.now();
 
   systemTime.value = 0;
@@ -171,14 +177,11 @@ const scheduleNextTick = (targetSysTime) => {
              setTimeout(async () => {
                  await fetchStatus();
                  if (isAllRoomsOff()) {
-                    logs.value.push(">>> 全员关机，测试结束。");
                     finishTest();
                  } else {
                     if (systemTime.value > maxTime + 2) {
-                        logs.value.push(">>> 超时强制结束。");
                         finishTest();
                     } else {
-                        logs.value.push(`>>> 等待关机...`);
                         scheduleNextTick(targetSysTime + 1);
                     }
                  }
@@ -196,37 +199,27 @@ const finishTest = async () => {
 
   try {
     await request.post('/ac/stopSimulation');
-    logs.value.push(">>> ✅ 物理引擎已暂停，温度锁定。");
     await fetchStatus();
-  } catch (e) {
-    logs.value.push(">>> ⚠️ 锁定失败");
-  }
+  } catch (e) {}
 };
 
-// --- 核心修复：增加指令间隔 ---
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const executeEventsForTime = async (time) => {
   const currentEvents = props.scriptEvents.filter(e => e.time === time);
   if (currentEvents.length > 0) {
-    logs.value.push(`--- 第 ${time} 分钟 ---`);
     const roomEventsMap = {};
     currentEvents.forEach(e => {
         if (!roomEventsMap[e.room]) roomEventsMap[e.room] = [];
         roomEventsMap[e.room].push(e);
     });
 
-    // 串行化执行所有房间的指令，防止瞬时并发冲垮后端
     const roomIds = Object.keys(roomEventsMap);
     for (const roomId of roomIds) {
         const events = roomEventsMap[roomId];
         for (const e of events) {
             try {
-                // 每条指令前给后端 300ms 喘息时间
-                // 这在 10s 的长周期里完全可以接受，但能极大降低冲突率
                 await sleep(300);
-
-                logs.value.push(`[执行] R${e.room} -> ${e.action} ${e.temp || ''} ${e.fan || ''}`);
                 if (e.action === 'ON') {
                      await request.post(`/ac/togglePower/${e.room}`, { power_status: 'ON', target_temp: e.temp, fan_speed: e.fan });
                 } else if (e.action === 'OFF') {
@@ -236,12 +229,9 @@ const executeEventsForTime = async (time) => {
                 } else if (e.action === 'FAN') {
                      await request.post(`/ac/setFanSpeed/${e.room}`, { fan_speed: e.fan });
                 }
-            } catch (err) {
-                logs.value.push(`[超时/失败] R${e.room}`);
-            }
+            } catch (err) {}
         }
     }
-    nextTick(() => { if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight; });
   }
 };
 
@@ -257,34 +247,30 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.data-table { width: 100%; border-collapse: collapse; background: white; table-layout: fixed; }
-th, td { border: 1px solid #eee; padding: 8px 4px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.9em; }
-.status-badge { display: inline-block; width: 60px; text-align: center; padding: 2px 0; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
+.data-table { width: 100%; border-collapse: collapse; background: white; table-layout: fixed; font-size: 13px; }
+th, td { border: 1px solid #ebeef5; padding: 10px 4px; text-align: center; }
+th { background: #fafafa; color: #909399; }
+.status-badge { display: inline-block; width: 50px; text-align: center; padding: 2px 0; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
 .status-badge.RUNNING { background-color: #67c23a; color: white; }
 .status-badge.WAITING { background-color: #e6a23c; color: white; }
 .status-badge.READY { background-color: #409eff; color: white; }
 .status-badge.IDLE { background-color: #909399; color: white; }
 .status-badge.OFF { background-color: #f4f4f5; color: #909399; border: 1px solid #dcdfe6; }
-.monitor-screen { display: flex; flex-direction: column; height: 100%; }
-.top-control-bar { display: flex; justify-content: space-between; align-items: center; background: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+
+.monitor-screen { display: flex; flex-direction: column; height: 100%; gap: 15px; }
+.top-control-bar { display: flex; justify-content: space-between; align-items: center; background: white; padding: 15px 20px; border-radius: 8px; border: 1px solid #eee; }
 .status-box .time { font-weight: bold; color: #409eff; font-size: 1.4em; }
-.tag { padding: 2px 8px; border-radius: 4px; color: white; font-size: 0.8em; margin-left: 5px; }
+.tag { padding: 4px 10px; border-radius: 4px; color: white; font-size: 0.8em; margin-left: 10px; }
 .tag.HIGH { background: #f56c6c; }
 .tag.MID, .tag.MEDIUM { background: #e6a23c; }
 .tag.LOW { background: #67c23a; }
 .tag.running { background: #67c23a; }
 .tag.paused { background: #e6a23c; }
 .tag.finished { background: #909399; }
-.start-btn { background: #67c23a; color: white; padding: 10px 25px; border: none; border-radius: 4px; cursor: pointer; }
-.next-btn { background: #409eff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-.main-content { display: flex; gap: 20px; height: 500px; }
-.monitor-panel { flex: 3; overflow-y: auto; }
-.log-panel { flex: 1; background: #2b2b2b; color: #ccc; display: flex; flex-direction: column; border-radius: 8px; }
-.log-header { background: #1a1a1a; padding: 10px; font-weight: bold; }
-.log-content { flex: 1; overflow-y: auto; padding: 10px; font-family: monospace; }
+
+.main-content { display: flex; gap: 20px; flex: 1; min-height: 0; }
+.monitor-panel { flex: 1; overflow-y: auto; background: white; border-radius: 8px; border: 1px solid #eee; }
 .active-row { background-color: #f0f9eb; }
 .temp { color: #f56c6c; font-weight: bold; }
-.total { color: #67c23a; }
-.running-text { color: #e6a23c; font-weight: bold; margin-left: 10px; }
-.finished-text { color: #67c23a; font-weight: bold; margin-left: 10px; font-size: 1.1em; }
+.total { color: #67c23a; font-weight: bold; }
 </style>
