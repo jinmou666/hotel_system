@@ -1,87 +1,108 @@
 <template>
-  <div class="app-container">
-    <div class="header">
-      <h2>酒店空调管理系统 (验收版)</h2>
-      <div class="steps">
-        <span :class="{ active: currentStep === 0 }">1. 模式设定</span> &gt;
-        <span :class="{ active: currentStep === 1 }">2. 办理入住</span> &gt;
-        <span :class="{ active: currentStep === 2 }">3. 导入脚本</span> &gt;
-        <span :class="{ active: currentStep === 3 }">4. 监控运行</span> &gt;
-        <span :class="{ active: currentStep === 4 }">5. 结账离店</span>
+  <div class="app-layout">
+    <!-- 左侧侧边栏 -->
+    <aside class="sidebar">
+      <div class="logo-area">
+        <h2>酒店空调</h2>
+        <p>管理系统</p>
       </div>
-    </div>
+      <nav class="nav-links">
+        <div
+          class="nav-item"
+          :class="{ active: currentTab === 'checkin' }"
+          @click="currentTab = 'checkin'"
+        >
+          <span class="icon">🏨</span> 入住管理
+        </div>
+        <div
+          class="nav-item"
+          :class="{ active: currentTab === 'control' }"
+          @click="currentTab = 'control'"
+        >
+          <span class="icon">🎮</span> 温控界面
+        </div>
+        <div
+          class="nav-item"
+          :class="{ active: currentTab === 'monitor' }"
+          @click="currentTab = 'monitor'"
+        >
+          <span class="icon">📊</span> 实时监控
+        </div>
+        <div
+          class="nav-item"
+          :class="{ active: currentTab === 'checkout' }"
+          @click="currentTab = 'checkout'"
+        >
+          <span class="icon">💳</span> 结账离店
+        </div>
+      </nav>
+    </aside>
 
-    <div class="content">
-      <ModeSelection v-if="currentStep === 0" @next="nextStep" />
-      <CheckIn v-if="currentStep === 1" @next="nextStep" />
-
-      <!-- Step 3: 负责产生 scriptEvents 数据 -->
-      <ScriptControl
-        v-if="currentStep === 2"
-        @next="handleScriptLoaded"
-      />
-
-      <!-- Step 4: 接收 scriptEvents 数据并执行 -->
-      <MonitorScreen
-        v-if="currentStep === 3"
-        :script-events="scriptData"
-        @next="nextStep"
-      />
-
-      <CheckOut v-if="currentStep === 4" @prev="currentStep = 3" />
-    </div>
+    <!-- 右侧主内容区 -->
+    <main class="main-content-area">
+      <!-- 核心修改：加入 CheckIn 到缓存列表 -->
+      <KeepAlive include="MonitorScreen,ControlPanel,CheckIn">
+        <component
+          :is="currentView"
+          :script-events="scriptData"
+          :start-trigger="startTrigger"
+          :reset-trigger="resetTrigger"
+          @start-test="handleStartTest"
+          @reset-system="handleSystemReset"
+        />
+      </KeepAlive>
+    </main>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue';
-import ModeSelection from './components/ModeSelection.vue';
+import { ref, computed } from 'vue';
 import CheckIn from './components/CheckIn.vue';
-import ScriptControl from './components/ScriptControl.vue';
+import ControlPanel from './components/ControlPanel.vue';
 import MonitorScreen from './components/MonitorScreen.vue';
 import CheckOut from './components/CheckOut.vue';
 
-const currentStep = ref(0);
-const scriptData = ref([]); // 存储解析后的脚本事件
+const currentTab = ref('checkin');
+const scriptData = ref([]);
+const startTrigger = ref(0);
+const resetTrigger = ref(0);
 
-const nextStep = () => {
-  if (currentStep.value < 4) {
-    currentStep.value++;
+const currentView = computed(() => {
+  switch(currentTab.value) {
+    case 'checkin': return CheckIn;
+    case 'control': return ControlPanel;
+    case 'monitor': return MonitorScreen;
+    case 'checkout': return CheckOut;
+    default: return CheckIn;
   }
+});
+
+const handleStartTest = (events) => {
+  scriptData.value = events;
+  startTrigger.value++;
+  currentTab.value = 'monitor';
 };
 
-// Step 3 完成时，保存解析好的脚本数据，并跳转
-const handleScriptLoaded = (events) => {
-  scriptData.value = events;
-  nextStep();
+const handleSystemReset = () => {
+  resetTrigger.value++;
+  scriptData.value = [];
 };
 </script>
 
 <style scoped>
-.app-container {
-  max-width: 1200px;
-  margin: 0 auto;
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-}
-.header {
-  text-align: center;
-  margin-bottom: 20px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid #eee;
-}
-.steps span {
-  color: #999;
-  font-weight: bold;
-  margin: 0 10px;
-}
-.steps span.active {
-  color: #409eff;
-  font-size: 1.1em;
-}
-.content {
-  padding: 20px;
-  background: #f9f9f9;
-  border-radius: 8px;
-  min-height: 500px;
-}
+.app-layout { display: flex; width: 100vw; height: 100vh; background: #f5f7fa; color: #333; }
+
+.sidebar { width: 220px; background: #2c3e50; color: white; display: flex; flex-direction: column; flex-shrink: 0; }
+.logo-area { padding: 30px 20px; border-bottom: 1px solid #34495e; text-align: center; }
+.logo-area h2 { margin: 0; font-size: 1.5em; color: #409eff; }
+.logo-area p { margin: 5px 0 0; font-size: 0.8em; color: #909399; }
+
+.nav-links { padding: 20px 0; display: flex; flex-direction: column; gap: 5px; }
+.nav-item { padding: 15px 25px; cursor: pointer; transition: 0.3s; display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.nav-item:hover { background: #34495e; }
+.nav-item.active { background: #409eff; color: white; font-weight: bold; border-right: 4px solid #fff; }
+.icon { font-size: 1.2em; }
+
+.main-content-area { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; }
+.main-content-area > * { flex: 1; }
 </style>
