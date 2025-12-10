@@ -182,88 +182,87 @@ class Scheduler:
 
     def _check_dynamic_preemption(self):
         if not self.wait_queue: return
-        # 已在 context 中调用
 
-        # 1. 找最弱的服务者
-        min_serv = None
-        for rid in self.service_queue:
-            r = Room.query.get(rid)
-            if not r: continue
-            p = self._get_priority(r.fan_speed)
-            d = self._get_service_duration(rid)
+        with db.app.app_context():
+            min_serv = None
+            for rid in self.service_queue:
+                r = Room.query.get(rid)
+                if not r: continue
+                p = self._get_priority(r.fan_speed)
+                d = self._get_service_duration(rid)
 
-            if min_serv is None or p < min_serv['prio']:
-                min_serv = {'rid': rid, 'prio': p, 'dur': d}
-            elif p == min_serv['prio'] and d > min_serv['dur']:
-                min_serv = {'rid': rid, 'prio': p, 'dur': d}
+                if min_serv is None or p < min_serv['prio']:
+                    min_serv = {'rid': rid, 'prio': p, 'dur': d}
+                elif p == min_serv['prio'] and d > min_serv['dur']:
+                    min_serv = {'rid': rid, 'prio': p, 'dur': d}
 
-        if not min_serv: return
+            if not min_serv: return
 
-        # 2. 找最强的等待者
-        max_wait = None
-        for rid in self.wait_queue:
-            r = Room.query.get(rid)
-            if not r or not self._needs_service(r): continue
-            p = self._get_priority(r.fan_speed)
+            max_wait = None
+            for rid in self.wait_queue:
+                r = Room.query.get(rid)
+                if not r or not self._needs_service(r): continue
+                p = self._get_priority(r.fan_speed)
 
-            if max_wait is None or p > max_wait['prio']:
-                max_wait = {'rid': rid, 'prio': p}
+                if max_wait is None or p > max_wait['prio']:
+                    max_wait = {'rid': rid, 'prio': p}
 
-        if not max_wait: return
+            if not max_wait: return
 
-        if max_wait['prio'] > min_serv['prio']:
-            print(f">>> [Dynamic Swap] R{max_wait['rid']} replaces R{min_serv['rid']}")
-            r_w = Room.query.get(max_wait['rid'])
-            r_s = Room.query.get(min_serv['rid'])
-            self._move_to_wait(r_s)
-            self._move_to_service(r_w)
+            if max_wait['prio'] > min_serv['prio']:
+                print(f">>> [Dynamic Swap] R{max_wait['rid']} replaces R{min_serv['rid']}")
+                r_w = Room.query.get(max_wait['rid'])
+                r_s = Room.query.get(min_serv['rid'])
+                self._move_to_wait(r_s)
+                self._move_to_service(r_w)
 
     def _tick_time_slice_check(self):
-        # 已在 context 中调用
         now = datetime.now()
-        for wid in list(self.wait_queue):
-            st = self.wait_start_times.get(wid)
-            if not st: continue
+        with db.app.app_context():
+            for wid in list(self.wait_queue):
+                st = self.wait_start_times.get(wid)
+                if not st: continue
 
-            dur = (now - st).total_seconds() * SystemConstants.TIME_KX
-            if dur >= SystemConstants.TIME_SLICE:
-                wroom = Room.query.get(wid)
-                if not wroom: continue
-                wprio = self._get_priority(wroom.fan_speed)
+                dur = (now - st).total_seconds() * SystemConstants.TIME_KX
+                if dur >= SystemConstants.TIME_SLICE:
+                    wroom = Room.query.get(wid)
+                    if not wroom: continue
+                    wprio = self._get_priority(wroom.fan_speed)
 
-                target_sid = None
-                max_d = -1
+                    target_sid = None
+                    max_d = -1
 
-                for sid in self.service_queue:
-                    sroom = Room.query.get(sid)
-                    if not sroom: continue
-                    sprio = self._get_priority(sroom.fan_speed)
+                    for sid in self.service_queue:
+                        sroom = Room.query.get(sid)
+                        if not sroom: continue
+                        sprio = self._get_priority(sroom.fan_speed)
 
-                    if sprio == wprio:
-                        d = self._get_service_duration(sid)
-                        if d > max_d:
-                            max_d = d
-                            target_sid = sid
+                        if sprio == wprio:
+                            d = self._get_service_duration(sid)
+                            if d > max_d:
+                                max_d = d
+                                target_sid = sid
 
-                if target_sid:
-                    print(f">>> [RR Slice] R{wid} rotates R{target_sid}")
-                    r_wait = Room.query.get(wid)
-                    r_serv = Room.query.get(target_sid)
-                    self._move_to_wait(r_serv)
-                    self._move_to_service(r_wait)
-                    return
+                    if target_sid:
+                        print(f">>> [RR Slice] R{wid} rotates R{target_sid}")
+                        r_wait = Room.query.get(wid)
+                        r_serv = Room.query.get(target_sid)
+                        self._move_to_wait(r_serv)
+                        self._move_to_service(r_wait)
+                        return
 
-                    # ================= 物理循环 (核心优化) =================
+                        # ================= 物理循环 (优化版) =================
 
     def _simulation_loop(self):
-        step_real_sec = 0.2
+        # 优化 1: 增加间隔至 0.5s，降低 DB 竞争频率
+        step_real_sec = 0.5
+
         while self.is_running:
             if self.physics_paused:
                 time.sleep(1)
                 self.last_tick_time = datetime.now()
                 continue
 
-            # 阶段 1: 计算物理 (写DB) - 独立事务
             with db.app.app_context():
                 try:
                     now = datetime.now()
@@ -271,16 +270,16 @@ class Scheduler:
 
                     if actual_delta > 0.05:
                         self.last_tick_time = now
-                        if actual_delta > 1.0: actual_delta = 1.0
+                        # 优化 2: 放宽追赶限制，允许一次追赶 5秒的物理时间，防止跳变
+                        if actual_delta > 5.0: actual_delta = 5.0
+
                         delta_sys_sec = actual_delta * SystemConstants.TIME_KX
                         self._update_all_physics(delta_sys_sec)
                 except Exception as e:
                     print(f"Phys Loop Err: {e}")
 
-            # 主动让出 CPU 和 DB 连接，给 HTTP 请求机会
-            time.sleep(0.02)
+            time.sleep(0.05)
 
-            # 阶段 2: 调度检查 (读DB + 内存锁) - 独立事务
             with db.app.app_context():
                 try:
                     with self._lock:
@@ -289,11 +288,11 @@ class Scheduler:
                 except Exception as e:
                     pass
 
-            # 主循环休眠
             time.sleep(step_real_sec)
 
     def _update_all_physics(self, delta_sys_sec):
-        rooms = Room.query.all()
+        # 优化 3: 强制按 ID 排序更新，防止死锁 (Deadlock Prevention)
+        rooms = Room.query.order_by(Room.room_id).all()
         for room in rooms:
             self._update_single_room(room, delta_sys_sec)
         db.session.commit()

@@ -10,8 +10,6 @@
            <span v-else class="tag paused">等待指令</span>
         </div>
       </div>
-
-      <!-- 已移除中间的状态提示文字 -->
     </div>
 
     <div class="main-content">
@@ -47,14 +45,12 @@
           </tbody>
         </table>
       </div>
-
-      <!-- 已移除 log-panel DOM 结构，彻底隐藏日志 -->
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, nextTick, watch, onActivated } from 'vue';
 import request from '../utils/request';
 
 defineOptions({ name: 'MonitorScreen' });
@@ -66,17 +62,38 @@ const props = defineProps({
 });
 
 const roomList = ref([]);
-// 日志数据虽然不再显示，但在逻辑中保留以防后续需要恢复或用于调试
 const logs = ref([]);
 const systemTime = ref(0);
 const isRunning = ref(false);
 const isFinished = ref(false);
+
+// 核心修复：本地记录上一次处理的 trigger 值，防止重复执行或错过执行
+const lastProcessedTrigger = ref(0);
 
 let monitorTimer = null;
 let testTimeoutId = null;
 let startTime = 0;
 
 const TICK_INTERVAL = 10000;
+
+// --- 统一的启动检查逻辑 ---
+const checkAndStart = () => {
+  // 如果父组件传来的 trigger 大于我们上一次处理的 trigger，说明有新指令
+  if (props.startTrigger > lastProcessedTrigger.value && props.scriptEvents.length > 0) {
+    lastProcessedTrigger.value = props.startTrigger; // 更新本地记录
+    startTest();
+  }
+};
+
+// 1. 监听器：处理组件已在活跃状态时的信号
+watch(() => props.startTrigger, checkAndStart);
+
+// 2. 激活钩子：处理组件刚挂载或从后台切回时的信号 (修复第一次点击无效的问题)
+onActivated(() => {
+  checkAndStart();
+  // 每次切回来也刷新一下状态
+  fetchStatus();
+});
 
 // --- 监听重置信号 ---
 watch(() => props.resetTrigger, (newVal) => {
@@ -86,13 +103,6 @@ watch(() => props.resetTrigger, (newVal) => {
     if (testTimeoutId) clearTimeout(testTimeoutId);
     systemTime.value = 0;
     fetchStatus();
-  }
-});
-
-// --- 监听启动信号 ---
-watch(() => props.startTrigger, (newVal) => {
-  if (newVal > 0 && props.scriptEvents.length > 0) {
-    startTest();
   }
 });
 
